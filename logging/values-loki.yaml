@@ -1,0 +1,28 @@
+# Минимальные values для чарта grafana/loki (6.x).
+# Loki в режиме single-binary, файловое хранилище (PVC), аутентификация отключена.
+deploymentMode: SingleBinary
+
+loki:
+  # Доступ из кластера без аутентификации (стенд/демо).
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: filesystem
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+
+singleBinary:
+  replicas: 1
+  persistence:
+    # На bare-metal kubeadm нет default StorageClass, поэтому PVC не поднимется.
+    # Для демо используем ephemeral-хранилище (логи живут до пересоздания пода).
+    enabled: false
+    # size: 10Gi

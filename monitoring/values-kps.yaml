@@ -1,0 +1,20 @@
+# Minimal values for kube-prometheus-stack (release `kps`, namespace `monitoring`).
+# Everything not listed here stays at the chart defaults. The chart already ships
+# Prometheus, Grafana, node-exporter, kube-state-metrics and their ServiceMonitors,
+# which covers the mandatory infrastructure metrics out of the box.
+
+grafana:
+  enabled: true
+
+# Optional: restrict which ServiceMonitors Prometheus picks up by label.
+# The nginx-metrics ServiceMonitor carries `release: kps`, and the chart's default
+# selector (serviceMonitorSelectorNilUsesHelmValues) already selects on that label,
+# so uncomment only if you want an explicit selector.
+# prometheus:
+#   prometheusSpec:
+#     serviceMonitorSelector:
+#       matchLabels:
+#         release: kps
+
+# Grafana default credentials are admin / prom-operator (the value is set in values).
+# Do NOT commit real secrets here.

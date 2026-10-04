@@ -1,0 +1,11 @@
+# =============================================================================
+# Конфигурация kubeadm init (Kubernetes v1.31.6, одиночный control-plane узел).
+# API kubeadm v1beta4 соответствует Kubernetes 1.31.
+# podSubnet 10.244.0.0/16 согласован с CNI Calico 3.29.3.
+# Остальные параметры — значения по умолчанию kubeadm.
+# =============================================================================
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: v1.31.6
+networking:
+  podSubnet: 10.244.0.0/16

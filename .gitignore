@@ -1,0 +1,37 @@
+# --- Kubernetes credentials / certificates (никогда не коммитить) ---
+*.pem
+*.crt
+*.key
+admin.conf
+*.kubeconfig
+kubeconfig
+.kube/
+
+# --- Build artifacts ---
+*.tar
+*.tar.gz
+*.zip
+*.rar
+
+# --- Archives for submission (собираются отдельно, в репозиторий не входят) ---
+/archive/
+*.zip
+*.rar
+Ссылка.txt
+Паспорт.pdf
+Паспорт.doc
+Паспорт.docx
+
+# --- Исходное задание и артефакты (не часть решения) ---
+*.docx
+
+# --- Secrets ---
+*.secret
+*.env
+.env
+
+# --- OS / editors ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,22 @@
+# ConfigMap с датасорсом Grafana. kube-prometheus-stack подхватывает её
+# sidecar'ом Grafana по метке grafana_datasource: "1" (namespace monitoring).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-datasource
+  namespace: monitoring
+  labels:
+    grafana_datasource: "1"
+data:
+  loki-datasource.json: |
+    {
+      "apiVersion": 1,
+      "datasources": [
+        {
+          "name": "Loki",
+          "type": "loki",
+          "access": "proxy",
+          "url": "http://loki.logging.svc.cluster.local:3100"
+        }
+      ]
+    }

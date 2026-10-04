@@ -1,0 +1,126 @@
+# Fluentd DaemonSet -> Loki.
+# Собирает контейнерные логи (/var/log/containers/*.log), обогащает их
+# kubernetes-метаданными и отправляет в Loki (плагин fluent-plugin-grafana-loki).
+# pos-файл и буфер вынесены на отдельный writable hostPath /var/lib/fluentd,
+# т.к. /var/log монтируется read-only.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluentd
+  namespace: logging
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluentd
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluentd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fluentd
+subjects:
+  - kind: ServiceAccount
+    name: fluentd
+    namespace: logging
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentd-config
+  namespace: logging
+data:
+  fluent.conf: |
+    # tail контейнерных логов (симлинки /var/log/containers/*.log -> /var/log/pods/...)
+    <source>
+      @type tail
+      @id in_tail_container_logs
+      path /var/log/containers/*.log
+      pos_file /var/lib/fluentd/containers.log.pos
+      tag kubernetes.*
+      read_from_head true
+      # containerd пишет логи в CRI-формате (не JSON), поэтому парсинг не задаём:
+      # строка целиком попадёт в поле message, а метки под/неймспейс/контейнер
+      # добавит фильтр kubernetes_metadata.
+    </source>
+
+    # обогащение записей метаданными Kubernetes (namespace_name, pod_name, container_name, labels)
+    <filter kubernetes.**>
+      @type kubernetes_metadata
+    </filter>
+
+    # отправка в Loki; метки namespace_name/pod_name/container_name создаются плагином loki
+    <match **>
+      @type loki
+      url "http://loki.logging.svc.cluster.local:3100"
+      extract_kubernetes_labels true
+      remove_keys ["kubernetes", "docker"]
+      <buffer>
+        @type file
+        path /var/lib/fluentd/buffer/
+        flush_mode interval
+        flush_interval 5s
+        flush_thread_count 2
+      </buffer>
+    </match>
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd
+  namespace: logging
+  labels:
+    app: fluentd
+spec:
+  selector:
+    matchLabels:
+      app: fluentd
+  template:
+    metadata:
+      labels:
+        app: fluentd
+    spec:
+      serviceAccountName: fluentd
+      containers:
+        - name: fluentd
+          image: fluentd-loki:1.17
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: FLUENT_UID
+              value: "0"            # root для чтения host-логов
+            - name: K8S_NODE_NAME   # node-local watch подов в kubernetes_metadata
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          volumeMounts:
+            - name: config
+              mountPath: /fluentd/etc/fluent.conf
+              subPath: fluent.conf
+              readOnly: true
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            - name: fluentd-state
+              mountPath: /var/lib/fluentd   # writable: pos-файл + буфер
+      tolerations:
+        - operator: Exists
+      volumes:
+        - name: config
+          configMap:
+            name: fluentd-config
+        - name: varlog
+          hostPath:
+            path: /var/log
+            type: DirectoryOrCreate
+        - name: fluentd-state
+          hostPath:
+            path: /var/lib/fluentd
+            type: DirectoryOrCreate

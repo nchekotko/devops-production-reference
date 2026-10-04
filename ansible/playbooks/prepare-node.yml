@@ -1,0 +1,187 @@
+---
+# =============================================================================
+# Подготовка узла Ubuntu 24.04 для Kubernetes v1.31.6 (kubeadm).
+# Плейбук запускается ЛОКАЛЬНО на самой ноде (hosts: localhost, connection: local,
+# become: yes) — SSH-инвентарь не нужен. Все задачи идемпотентны.
+# Пароли/токены/ключи не создаются и не сохраняются.
+# =============================================================================
+- name: Prepare Ubuntu 24.04 node for Kubernetes v1.31.6
+  hosts: localhost
+  connection: local
+  become: yes
+  gather_facts: yes
+
+  vars:
+    containerd_version: "1.7.24-1"      # CRI containerd (точная версия пакета containerd.io)
+    k8s_version: "1.31.6-1.1"          # закрепление kubelet/kubeadm/kubectl
+    helm_install_dir: "/usr/local/bin"
+
+  handlers:
+    - name: restart containerd
+      service:
+        name: containerd
+        state: restarted
+
+  tasks:
+    # ---------------------------------------------------------------
+    # 1. Отключение swap
+    # ---------------------------------------------------------------
+    - name: Disable swap immediately
+      command: swapoff -a
+      changed_when: false
+      failed_when: false
+
+    - name: Comment out swap entries in /etc/fstab
+      replace:
+        path: /etc/fstab
+        regexp: '(?m)^([^#].*\sswap\s.*)$'
+        replace: '# \1'
+
+    # ---------------------------------------------------------------
+    # 2. Модули ядра
+    # ---------------------------------------------------------------
+    - name: Load required kernel modules
+      shell: modprobe br_netfilter && modprobe overlay
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Persist kernel modules
+      copy:
+        dest: /etc/modules-load.d/kubernetes.conf
+        content: |
+          br_netfilter
+          overlay
+        mode: '0644'
+
+    # ---------------------------------------------------------------
+    # 3. Параметры sysctl
+    # ---------------------------------------------------------------
+    - name: Configure Kubernetes sysctl parameters
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        sysctl_file: /etc/sysctl.d/99-kubernetes-cri.conf
+        reload: yes
+      loop:
+        - { name: net.ipv4.ip_forward, value: "1" }
+        - { name: net.bridge.bridge-nf-call-iptables, value: "1" }
+        - { name: net.bridge.bridge-nf-call-ip6tables, value: "1" }
+
+    # ---------------------------------------------------------------
+    # 4. Базовые пакеты
+    # ---------------------------------------------------------------
+    - name: Install base packages
+      apt:
+        name:
+          - curl
+          - gnupg
+          - ca-certificates
+          - apt-transport-https
+        state: present
+        update_cache: yes
+
+    # ---------------------------------------------------------------
+    # 5. containerd (официальный Docker apt-репозиторий download.docker.com)
+    # ---------------------------------------------------------------
+    - name: Create apt keyrings directory
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Download Docker apt GPG key
+      get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
+        force: yes
+
+    - name: Add Docker apt repository
+      apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+        update_cache: yes
+
+    - name: Install containerd.io (pinned to {{ containerd_version }})
+      apt:
+        name: "containerd.io={{ containerd_version }}"
+        state: present
+
+    - name: Generate default containerd configuration
+      shell: containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+
+    - name: Enable SystemdCgroup for containerd
+      lineinfile:
+        path: /etc/containerd/config.toml
+        regexp: '^(\s*SystemdCgroup\s*=\s*).*'
+        line: '\1true'
+        backrefs: yes
+      notify: restart containerd
+
+    - name: Enable and start containerd
+      service:
+        name: containerd
+        state: started
+        enabled: yes
+
+    # ---------------------------------------------------------------
+    # 6. Docker CE (docker.io) — нужен позже для сборки образа Fluentd
+    # ---------------------------------------------------------------
+    - name: Install docker.io
+      apt:
+        name: docker.io
+        state: present
+
+    - name: Enable and start docker
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    # ---------------------------------------------------------------
+    # 7. Репозиторий pkgs.k8s.io и пакеты kubelet/kubeadm/kubectl
+    # ---------------------------------------------------------------
+    - name: Download Kubernetes apt GPG key
+      get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key
+        dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+        mode: '0644'
+        force: yes
+
+    - name: Add Kubernetes apt repository
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /"
+        state: present
+        filename: kubernetes
+        update_cache: yes
+
+    - name: Install kubelet, kubeadm, kubectl (pinned {{ k8s_version }})
+      apt:
+        name:
+          - "kubelet={{ k8s_version }}"
+          - "kubeadm={{ k8s_version }}"
+          - "kubectl={{ k8s_version }}"
+        state: present
+
+    # apt-mark hold идемпотентен: повторный запуск просто сообщает
+    # "was already set on hold".
+    - name: Hold kubelet, kubeadm, kubectl versions
+      command: apt-mark hold kubelet kubeadm kubectl
+      register: _k8s_hold
+      changed_when: "'was already set on hold' not in _k8s_hold.stdout"
+
+    # ---------------------------------------------------------------
+    # 8. Helm (официальный скрипт установки)
+    # ---------------------------------------------------------------
+    - name: Install Helm via official script
+      shell: |
+        set -euo pipefail
+        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash -
+      args:
+        creates: "{{ helm_install_dir }}/helm"
+      environment:
+        HELM_INSTALL_DIR: "{{ helm_install_dir }}"

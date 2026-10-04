@@ -1,0 +1,145 @@
+---
+# =============================================================================
+# Инициализация одноузлового (control-plane) кластера Kubernetes v1.31.6.
+# Запускается ЛОКАЛЬНО (hosts: localhost, connection: local, become: yes).
+# Идемпотентен: при наличии /etc/kubernetes/admin.conf kubeadm init пропускается.
+# Пароли/токены/ключи не создаются и не сохраняются.
+# =============================================================================
+- name: Initialize Kubernetes cluster
+  hosts: localhost
+  connection: local
+  become: yes
+  gather_facts: yes
+
+  vars:
+    repo_root: "{{ playbook_dir }}/../.."
+    kubeadm_config: "{{ repo_root }}/kubernetes/cluster/kubeadm-config.yaml"
+    # Домашний каталог и пользователь, которому выдаём kubeconfig
+    # ($HOME/.kube/config). При запуске от root это /root и root.
+    kube_home: "{{ ansible_env.HOME | default('/root') }}"
+    kube_user: "{{ ansible_user_id | default('root') }}"
+    calico_version: "v3.29.3"
+    calico_manifest_url: "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml"
+    calico_manifest: "/tmp/calico.yaml"
+    metallb_version: "v0.14.9"
+    metallb_manifest_url: "https://raw.githubusercontent.com/metallb/metallb/{{ metallb_version }}/config/manifests/metallb-native.yaml"
+    metallb_config: "/tmp/metallb-config.yaml"
+    # Диапазон адресов для MetalLB (Layer2). ВАЖНО: LB_IP_RANGE должен попадать
+    # в подсеть сети узла, иначе LoadBalancer-адреса не будут маршрутизироваться.
+    # Пример: сеть узла 192.168.1.0/24 -> LB_IP_RANGE=192.168.1.240-192.168.1.250
+    lb_ip_range: "{{ lookup('env', 'LB_IP_RANGE') | default('192.168.1.240-192.168.1.250', true) }}"
+
+  tasks:
+    # ---------------------------------------------------------------
+    # 1. kubeadm init (только если кластер ещё не инициализирован)
+    # ---------------------------------------------------------------
+    - name: Check if cluster is already initialized
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: _admin_conf
+
+    - name: Run kubeadm init
+      command: kubeadm init --config kubernetes/cluster/kubeadm-config.yaml
+      args:
+        chdir: "{{ repo_root }}"
+      when: not _admin_conf.stat.exists
+
+    # ---------------------------------------------------------------
+    # 2. kubeconfig для текущего пользователя
+    # ---------------------------------------------------------------
+    - name: Ensure user .kube directory exists
+      file:
+        path: "{{ kube_home }}/.kube"
+        state: directory
+        mode: '0755'
+        owner: "{{ kube_user }}"
+        group: "{{ kube_user }}"
+
+    - name: Copy admin.conf to user kubeconfig
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "{{ kube_home }}/.kube/config"
+        remote_src: yes
+        owner: "{{ kube_user }}"
+        group: "{{ kube_user }}"
+        mode: '0600'
+
+    # ---------------------------------------------------------------
+    # 3. Снятие taint с control-plane (одноузловой кластер)
+    # ---------------------------------------------------------------
+    - name: Remove control-plane taint
+      command: kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: _taint
+      changed_when: "'untainted' in _taint.stdout"
+      failed_when: false
+
+    # ---------------------------------------------------------------
+    # 4. CNI Calico 3.29.3 (podSubnet 10.244.0.0/16)
+    # ---------------------------------------------------------------
+    - name: Download Calico manifest
+      get_url:
+        url: "{{ calico_manifest_url }}"
+        dest: "{{ calico_manifest }}"
+        mode: '0644'
+
+    # В манифесте calico.yaml задаём CALICO_IPV4POOL_CIDR в env calico-node
+    # (по умолчанию там 192.168.0.0/16 — меняем на 10.244.0.0/16).
+    - name: Set Calico pod CIDR to 10.244.0.0/16
+      shell: |
+        set -e
+        sed -i 's|# - name: CALICO_IPV4POOL_CIDR|- name: CALICO_IPV4POOL_CIDR|' "{{ calico_manifest }}"
+        sed -i 's|#   value: "192.168.0.0/16"|  value: "10.244.0.0/16"|' "{{ calico_manifest }}"
+      args:
+        executable: /bin/bash
+
+    - name: Apply Calico
+      command: kubectl apply -f "{{ calico_manifest }}"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    # ---------------------------------------------------------------
+    # 5. MetalLB 0.14.9 (Layer2)
+    # ---------------------------------------------------------------
+    - name: Install MetalLB
+      command: kubectl apply -f "{{ metallb_manifest_url }}"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Wait for MetalLB CRDs to be established
+      command: >-
+        kubectl wait --for=condition=Established
+        crd/ipaddresspools.metallb.io crd/l2advertisements.metallb.io
+        --timeout=120s
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      changed_when: false
+
+    - name: Write MetalLB IPAddressPool and L2Advertisement manifest
+      copy:
+        dest: "{{ metallb_config }}"
+        mode: '0644'
+        content: |
+          apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: default-pool
+            namespace: metallb-system
+          spec:
+            addresses:
+              - {{ lb_ip_range }}
+          ---
+          apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: default
+            namespace: metallb-system
+          spec:
+            ipAddressPools:
+              - default-pool
+
+    - name: Apply MetalLB configuration
+      command: kubectl apply -f "{{ metallb_config }}"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf

@@ -1,0 +1,16 @@
+# Нормализация переводов строк: в репозитории и при checkout — LF.
+# Критично для shell-скриптов, которые выполняются на Ubuntu.
+* text=auto eol=lf
+
+# Shell-скрипты обязаны быть LF (иначе "bad interpreter: /usr/bin/env bash^M")
+*.sh text eol=lf
+Makefile text eol=lf
+
+# Бинарные файлы
+*.docx binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.zip binary
+*.tar binary
+*.gz binary
