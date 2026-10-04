@@ -78,6 +78,7 @@
           - gnupg
           - ca-certificates
           - apt-transport-https
+          - openssl
         state: present
         update_cache: yes
 
@@ -129,11 +130,18 @@
         enabled: yes
 
     # ---------------------------------------------------------------
-    # 6. Docker CE (docker.io) — нужен позже для сборки образа Fluentd
+    # 6. Docker Engine (docker-ce) — нужен позже для сборки образа Fluentd.
+    #    Используем docker-ce + docker-ce-cli из того же apt-репозитория
+    #    download.docker.com (а НЕ пакет docker.io): docker.io тянет за собой
+    #    Ubuntu-овский пакет containerd, который конфликтует с containerd.io
+    #    (CRI нашего кластера) и может его подменить. docker-ce официально
+    #    сосуществует с containerd.io.
     # ---------------------------------------------------------------
-    - name: Install docker.io
+    - name: Install docker-ce and docker-ce-cli
       apt:
-        name: docker.io
+        name:
+          - docker-ce
+          - docker-ce-cli
         state: present
 
     - name: Enable and start docker

@@ -1,0 +1,23 @@
+# Canary-маршрут: постепенный перевод трафика между версиями приложения
+# (nginx v1 и nginx-v2) без остановки сервиса. Управление весами — scripts/canary.sh.
+# Проверка: curl -H 'Host: canary.example.com' http://<LB-IP>/
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: nginx-canary
+  namespace: default
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: eg
+  hostnames:
+    - canary.example.com
+  rules:
+    - backendRefs:
+        - name: nginx
+          port: 80
+          weight: 95
+        - name: nginx-v2
+          port: 80
+          weight: 5

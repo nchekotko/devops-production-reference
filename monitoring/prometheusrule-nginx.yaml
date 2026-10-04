@@ -1,0 +1,28 @@
+# Алерты Prometheus для приложения (подхватываются по метке release=kps).
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: nginx-alerts
+  namespace: monitoring
+  labels:
+    release: kps
+spec:
+  groups:
+    - name: nginx
+      rules:
+        - alert: NginxDown
+          expr: nginx_up == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Экземпляр Nginx недоступен"
+            description: "nginx-exporter не может получить метрики с {{ $labels.instance }} более 1 минуты."
+        - alert: NginxHigh5xxRate
+          expr: sum(rate(nginx_http_requests_total{status=~"5.."}[5m])) by (instance) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Высокая доля 5xx ответов Nginx"
+            description: "{{ $labels.instance }} отдаёт более 0.05 ответов 5xx в секунду."

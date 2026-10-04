@@ -3,47 +3,61 @@
 Решение кейса **MTS ENGINEER HACK** (DevOps): развёртывание простого веб-приложения в
 Kubernetes с организацией доступа через Kubernetes Gateway API, сбором метрик Prometheus
 и сбором логов Fluentd. Полностью воспроизводимо на **Ubuntu 24.04** и сводится к
-единственной команде `make deploy`.
+единственной команде `make deploy`. В решении реализованы production-практики: TLS,
+персистентное хранилище, секреты, HPA/PDB, NetworkPolicy, алерты, дашборд, canary-деплой,
+GitOps (ArgoCD) и CI/CD.
 
 ---
 
 ## 1. Краткое описание
 
 - Кластер **Kubernetes v1.31.6**, развёрнутый через **kubeadm** (containerd + Calico + MetalLB).
-- Демо-приложение **Nginx**, отвечающее `Hello World!` на `GET /`, с access/error-логами в stdout/stderr.
-- Публикация через **Kubernetes Gateway API** — реализация **Envoy Gateway** (GatewayClass → Gateway → HTTPRoute).
-- Мониторинг **Prometheus** (kube-prometheus-stack): метрики узлов, состояния кластера и HTTP-метрики приложения.
-- Логирование **Fluentd** (DaemonSet) → **Loki**, просмотр в **Grafana**.
-- Автоматизация **Ansible + Helm + Makefile**, идемпотентный повторный запуск.
+- **Metrics Server** — для `kubectl top` и HorizontalPodAutoscaler.
+- **Local Path Provisioner** — StorageClass `local-path` для персистентных PVC.
+- Демо-приложение **Nginx** (`Hello World!`) с access/error-логами в stdout/stderr,
+  sidecar **nginx-prometheus-exporter** для HTTP-метрик, **HPA** и **PDB**.
+- Публикация через **Kubernetes Gateway API** — **Envoy Gateway** (GatewayClass → Gateway → HTTPRoute)
+  с HTTP- и HTTPS-листенерами (TLS-терминация) и расширенной маршрутизацией
+  (path, hostname, traffic splitting, canary).
+- Мониторинг **Prometheus** (kube-prometheus-stack): метрики узлов/кластера/приложения,
+  **алерты** (PrometheusRule), **Grafana dashboard**, персистентное хранилище метрик.
+- Логирование **Fluentd** (DaemonSet) → **Loki** (persistent) → **Grafana**.
+- Автоматизация **Ansible + Helm + Makefile**; идемпотентный повторный запуск;
+  **GitOps** (ArgoCD + kustomize) и **CI/CD** (GitHub Actions).
 
 ---
 
 ## 2. Архитектура
 
 ```
-                        ┌──────────────────────────────────────┐
-   Пользователь ──────► │  Envoy Gateway (LoadBalancer/MetalLB) │
-   curl / HTTPS        └────────────────┬─────────────────────┘
-                                        │ Gateway / HTTPRoute (path/host)
-                                        ▼
-                          ┌───────────────────────────┐
-                          │  Nginx Deployment + Service│◄── nginx-exporter (метрики)
-                          │  "Hello World!" + access.log│
-                          └──────────────┬────────────┘
-                                         │ stdout/stderr
-                                         ▼
-              ┌──────────────────┐   ┌────────────────────────┐
-              │  Prometheus       │◄──│  Fluentd DaemonSet      │
-              │  (node-exporter,  │   │  (сбор логов контейнеров)│
-              │   kube-state-     │   └──────────┬─────────────┘
-              │   metrics,        │              ▼
-              │   nginx-exporter) │        ┌──────────────┐
-              └────────┬─────────┘        │  Loki (логи)  │
-                       ▼                  └───────┬───────┘
-              ┌───────────────────────────────────▼────────┐
-              │          Grafana (метрики + логи)           │
-              └────────────────────────────────────────────┘
+                         ┌──────────────────────────────────────────┐
+    Пользователь ──────► │  Envoy Gateway (LoadBalancer/MetalLB IP)  │
+    curl HTTP/HTTPS     │  листенеры :80 (HTTP) и :443 (TLS)          │
+                         └────────────────┬─────────────────────────┘
+                                          │ Gateway / HTTPRoute (path/host/weight)
+                                          ▼
+                            ┌───────────────────────────┐
+                            │  Nginx Deployment + Service│◄── nginx-exporter (метрики)
+                            │  "Hello World!" + access.log│
+                            └──────────────┬────────────┘
+                                           │ stdout/stderr (контейнерные логи)
+                                           ▼
+                ┌──────────────────┐   ┌────────────────────────┐
+                │  Prometheus       │◄──│  Fluentd DaemonSet      │
+                │  (node-exporter,  │   │  (CRI-парсинг логов)    │
+                │   kube-state-     │   └──────────┬─────────────┘
+                │   metrics,        │              ▼
+                │   nginx-exporter, │        ┌──────────────┐
+                │   Alertmanager)   │        │  Loki (логи)  │
+                └────────┬─────────┘        └───────┬───────┘
+                         ▼                 ┌────────▼────────┐
+                ┌───────────────────┐      │  Grafana (метрики│
+                │ Metrics Server     │      │  + логи + alerts)│
+                │ Local Path Prov.   │      └─────────────────┘
+                └───────────────────┘
 ```
+
+Поток данных: трафик → Gateway API → приложение; метрики → Prometheus; логи → Fluentd → Loki → Grafana.
 
 ---
 
@@ -56,27 +70,32 @@ Kubernetes с организацией доступа через Kubernetes Gate
 | Container runtime | containerd | 1.7.24 |
 | CNI | Calico | 3.29.3 |
 | LoadBalancer | MetalLB (Layer2) | 0.14.9 |
+| Метрики узлов (HPA) | Metrics Server | v0.7.2 |
+| StorageClass | Local Path Provisioner | v0.0.31 |
 | Gateway API | Envoy Gateway | v1.2.1 |
 | Приложение | Nginx (+ nginx-prometheus-exporter) | 1.27.3 / 1.4.0 |
-| Мониторинг | kube-prometheus-stack (Prometheus + Grafana + node-exporter + kube-state-metrics) | последняя стабильная |
-| Логирование | Fluentd → Loki | fluentd 1.17 / loki 6.x |
-| Автоматизация | Ansible, Helm, Make | ansible-core, helm 3.x |
+| Мониторинг | kube-prometheus-stack (Helm) | chart 80.6.0 |
+| Логирование | Fluentd → Loki (Helm) | fluentd 1.17.2 / loki chart 6.7.1 |
+| Плагин Fluentd→Loki | fluent-plugin-grafana-loki | 1.3.0 |
+| GitOps | ArgoCD (+ kustomize) | v2.12.x |
+| Автоматизация | Ansible, Helm, Make, GitHub Actions | ansible-core, helm 3.x |
 
 ---
 
 ## 4. Требования к среде
 
-- Один сервер/ВМ с **Ubuntu 24.04 LTS** (root или sudo-доступ), минимум 2 vCPU / 4 ГБ RAM / 20 ГБ диск.
-- Доступ к сети Интернет (для apt, Helm-чартов и container images).
-- Установленные: `git`, `curl`. Остальное (containerd, kubeadm, Helm, ansible) ставится автоматически.
-- Свободный IP-диапазон в локальной подсети для MetalLB (см. `LB_IP_RANGE` ниже).
+- Один сервер/ВМ с **Ubuntu 24.04 LTS** (root или sudo-доступ). Рекомендуется **4 vCPU / 8 ГБ RAM / 40 ГБ диск**
+  (полный стек observability на одной ноде требователен к памяти; на 4 ГБ возможен OOM).
+- Доступ к сети Интернет (apt, Helm-чарты, container images, GitHub raw).
+- Установленные: `git`, `curl`. Остальное (containerd, docker-ce, kubeadm, Helm, ansible) ставится автоматически.
+- Свободный IP-диапазон в локальной подсети для MetalLB (см. `LB_IP_RANGE`).
 
 ---
 
 ## 5. Пошаговая инструкция по развёртыванию
 
 ```bash
-# Все шаги (установка пакетов, kubeadm, сборка/импорт образа Fluentd) требуют прав root.
+# Все шаги (установка пакетов, kubeadm, сборка образа Fluentd) требуют root.
 sudo -i
 git clone <URL_репозитория>
 cd <repo>
@@ -87,13 +106,20 @@ make deploy
 
 | Шаг | Команда | Что делает |
 |---|---|---|
-| 1 | `make cluster` | `scripts/01-cluster.sh` — подготовка узла (containerd, kubeadm/kubelet/kubectl, Helm) и создание кластера (kubeadm init, Calico, MetalLB) |
-| 2 | `make app` | `scripts/02-app.sh` — развёртывание Nginx-приложения (Deployment + Service + ConfigMap) |
-| 3 | `make gateway` | `scripts/03-gateway.sh` — установка Envoy Gateway + GatewayClass/Gateway/HTTPRoute |
-| 4 | `make monitoring` | `scripts/04-monitoring.sh` — установка kube-prometheus-stack + ServiceMonitor |
-| 5 | `make logging` | `scripts/05-logging.sh` — установка Loki + Fluentd DaemonSet |
+| 1 | `make cluster` | `scripts/01-cluster.sh` — подготовка узла (containerd, docker-ce, kubeadm/kubelet/kubectl, Helm) и создание кластера (kubeadm init, Calico, MetalLB, Metrics Server, Local Path Provisioner) |
+| 2 | `make app` | `scripts/02-app.sh` — Nginx (+ nginx-v2), Service, ConfigMap, HPA, PDB, NetworkPolicy |
+| 3 | `make gateway` | `scripts/03-gateway.sh` — Envoy Gateway + TLS-сертификат + GatewayClass/Gateway/HTTPRoute |
+| 4 | `make monitoring` | `scripts/04-monitoring.sh` — kube-prometheus-stack + ServiceMonitor + алерты + dashboard |
+| 5 | `make logging` | `scripts/05-logging.sh` — Loki (persistent) + Fluentd DaemonSet |
 
-При необходимости шаги можно выполнять по отдельности.
+Дополнительные команды:
+
+| Команда | Назначение |
+|---|---|
+| `make verify` | сквозная проверка решения (PASS/FAIL) |
+| `make canary PCT=20` | перевести 20% canary-трафика на `nginx-v2` (Gateway API) |
+| `make gitops` | установить ArgoCD (GitOps-режим) |
+| `make clean` | удалить решение (кластер остаётся) |
 
 ### Параметры (переменные окружения)
 
@@ -110,19 +136,21 @@ make deploy
 Envoy Gateway создаёт Service типа LoadBalancer; MetalLB назначает ему внешний IP.
 
 ```bash
-kubectl get svc -n default   # найти EXTERNAL-IP сервиса Envoy Gateway
-curl http://<LB-IP>/
+kubectl get gateway eg -n default -o jsonpath='{.status.addresses[0].value}'
+curl http://<IP>/
 # ожидаемый ответ: Hello World!
 ```
 
-Или одной командой:
+Проверка расширенных возможностей Gateway API:
 
 ```bash
-IP=$(kubectl get svc -n default -o jsonpath='{.items[?(@.spec.type=="LoadBalancer")].status.loadBalancer.ingress[0].ip}' | awk '{print $1}')
-curl -fsS "http://$IP/"
+curl http://<IP>/                             # Hello World!      (fallback-маршрут)
+curl http://<IP>/v1                           # Hello v1!         (path-маршрутизация)
+curl http://<IP>/split                        # Hello World! / Hello World v2! (traffic split 80/20)
+curl -H 'Host: hello.example.com' http://<IP>/  # Hello World v2! (hostname-маршрутизация)
+curl -H 'Host: canary.example.com' http://<IP>/ # Hello World! / Hello World v2! (canary, вес через make canary)
+curl -k https://<IP>/                         # Hello World!      (TLS-терминация, self-signed)
 ```
-
-Проверка ресурсов Gateway API:
 
 ```bash
 kubectl get gatewayclass,gw,gwroute -A
@@ -137,21 +165,29 @@ kubectl describe httproute nginx -n default
 kubectl port-forward -n monitoring svc/kps-prometheus 9090:9090
 ```
 
-Затем откройте http://localhost:9090 и выполните запросы (или через API):
+Запросы в http://localhost:9090 (или через API):
 
 ```bash
-# список целей и их состояние
 curl -s 'http://localhost:9090/api/v1/query?query=up'
-
-# HTTP-метрики приложения
 curl -s 'http://localhost:9090/api/v1/query?query=nginx_connections_active'
 curl -s 'http://localhost:9090/api/v1/query?query=rate(nginx_http_requests_total[5m])'
 ```
 
 Собираемые метрики:
 - **node-exporter** — CPU/память/диск/сеть узлов;
-- **kube-state-metrics** — состояние объектов Kubernetes (поды, деплойменты, узлы);
-- **nginx-exporter** (sidecar) — соединения и HTTP-запросы приложения.
+- **kube-state-metrics** — состояние объектов Kubernetes;
+- **nginx-exporter** (sidecar) — соединения, HTTP-запросы, коды, latency.
+
+Алерты (Prometheus → Alertmanager): `NginxDown`, `NginxHigh5xxRate`
+(см. `monitoring/prometheusrule-nginx.yaml`).
+
+Grafana (метрики + логи + готовый дашборд «Nginx (Gateway API demo)»):
+
+```bash
+kubectl port-forward -n monitoring svc/kps-grafana 3000:80
+# http://localhost:3000 ; логин admin, пароль из Secret:
+kubectl -n monitoring get secret grafana-admin-secret -o jsonpath='{.data.admin-password}' | base64 -d; echo
+```
 
 ---
 
@@ -159,7 +195,7 @@ curl -s 'http://localhost:9090/api/v1/query?query=rate(nginx_http_requests_total
 
 ```bash
 # сделать запрос к приложению, чтобы появилась запись в access-логе
-curl http://<LB-IP>/
+curl http://<IP>/
 
 # пробросить Loki
 kubectl port-forward -n logging svc/loki 3100:3100
@@ -169,13 +205,9 @@ curl -G 'http://localhost:3100/loki/api/v1/query_range' \
      --data-urlencode 'query={container_name="nginx"}'
 ```
 
-Логи собираются со всех нод DaemonSet'ом Fluentd (access- и error-логи приложения из
-stdout/stderr контейнеров) и поступают в Loki. Просмотр в Grafana (Explore → Loki):
-
-```bash
-kubectl port-forward -n monitoring svc/kps-grafana 3000:80
-# http://localhost:3000 , логин/пароль по умолчанию: admin / prom-operator
-```
+Fluentd (DaemonSet) собирает логи всех контейнеров, парсит CRI-формат (поле `stream`
+разделяет stdout=access / stderr=error) и отправляет в Loki с лейблами
+`namespace_name`/`pod_name`/`container_name`. Просмотр — Grafana → Explore → Loki.
 
 ---
 
@@ -185,49 +217,83 @@ kubectl port-forward -n monitoring svc/kps-grafana 3000:80
 make verify
 ```
 
-Скрипт выводит состояние узлов, подов, ресурсов Gateway API и готовые команды проверки.
+Скрипт выполняет реальные проверки (с выводом PASS/FAIL и ненулевым кодом при сбое):
+состояние узлов/подов, готовность деплойментов, назначение адреса Gateway, HTTP-ответ
+приложения, расширенные маршруты (path/hostname/split/TLS), запросы Prometheus
+(`up`, `nginx_connections_active`) и наличие записей в Loki.
 
 ---
 
-## 10. Дополнительные возможности
+## 10. Production-практики
 
-- **Расширенные возможности Gateway API**: маршрутизация по path и hostname (несколько правил в HTTPRoute).
-- **HTTP-метрики приложения**: nginx-prometheus-exporter (запросы, соединения, коды ответов, latency).
-- **Метрики CPU/RAM**: node-exporter и kube-state-metrics.
-- **Централизованный поиск логов**: Loki + единый UI Grafana (метрики и логи).
-- **Практики надёжности и безопасности**: readiness/liveness-пробы, resources requests/limits, RBAC для Fluentd, отсутствие секретов в репозитории.
+| Практика | Реализация |
+|---|---|
+| TLS-терминация | HTTPS-листенер Gateway (:443), сертификат генерируется `03-gateway.sh` (для прода — cert-manager) |
+| Персистентность | StorageClass `local-path`; PVC для Prometheus, Grafana, Loki |
+| Секреты | Пароль Grafana — случайный, в Secret `grafana-admin-secret` (не в git); `.gitignore` исключает ключи/архивы |
+| Надёжность | readiness/liveness-пробы, resources requests/limits, HPA, PDB |
+| Безопасность | NetworkPolicy (default-deny + allow-list), RBAC для Fluentd, минимальные права |
+| Наблюдаемость | Алерты Prometheus, готовый Grafana dashboard, retention метрик/логов 7 дней |
+| Canary-деплой | HTTPRoute `nginx-canary` + `make canary PCT=N` (плавный сдвиг трафика) |
+| GitOps | ArgoCD (bootstrap + Application) поверх kustomize-оверлея (`kubectl apply -k .`) |
+| Воспроизводимость | Все версии закреплены (образы, Helm-чарты, гем), идемпотентный `make deploy` |
+| CI/CD | GitHub Actions: shellcheck + kubeconform + hadolint |
+| Teardown | `make clean` (удаление решения без сноса кластера) |
 
 ---
 
-## 11. Структура репозитория
+## 11. Дополнительные возможности
+
+- **Расширенные возможности Gateway API**: path- и hostname-маршрутизация, несколько
+  backend'ов, traffic splitting (weights), TLS-терминация.
+- **Canary-деплой**: `make canary PCT=N` плавно переводит трафик между версиями
+  приложения через Gateway API (`Host: canary.example.com`).
+- **HTTP-метрики приложения**: nginx-prometheus-exporter (запросы, соединения, коды, latency).
+- **CPU/RAM метрики**: node-exporter + kube-state-metrics; HPA по CPU.
+- **Централизованный поиск логов**: Loki + единый UI Grafana (метрики + логи + алерты).
+- **GitOps**: ArgoCD + kustomize-оверлей (см. `gitops/`).
+- **Надёжность и безопасность**: HPA, PDB, NetworkPolicy, probes, resources, RBAC, секреты.
+
+---
+
+## 12. Структура репозитория
 
 ```
 .
-├── Makefile                     # make deploy / make verify / отдельные шаги
+├── Makefile                        # make deploy / verify / canary / gitops / clean
+├── kustomization.yaml              # kustomize-оверлей (kubectl apply -k ., для GitOps)
+├── .github/workflows/ci.yml        # CI: shellcheck + kubeconform + hadolint
 ├── scripts/
-│   ├── 01-cluster.sh            # подготовка узла + kubeadm-кластер
-│   ├── 02-app.sh                # Nginx-приложение
-│   ├── 03-gateway.sh            # Envoy Gateway
-│   ├── 04-monitoring.sh         # Prometheus
-│   ├── 05-logging.sh            # Loki + Fluentd
-│   └── verify.sh                # сквозная проверка
-├── ansible/playbooks/           # prepare-node.yml, init-cluster.yml
-├── kubernetes/cluster/          # kubeadm-config.yaml
-├── apps/nginx/                  # deployment/service/configmap
-├── gateway/                     # gatewayclass/gateway/httproute
-├── monitoring/                  # values-kps.yaml, nginx-servicemonitor.yaml
-├── logging/                     # values-loki.yaml, fluentd DaemonSet + Dockerfile
-└── docs/passport.md             # исходник паспорта решения
+│   ├── 01-cluster.sh               # подготовка узла + kubeadm-кластер
+│   ├── 02-app.sh                   # Nginx-приложение
+│   ├── 03-gateway.sh               # Envoy Gateway + TLS-сертификат
+│   ├── 04-monitoring.sh            # Prometheus (+ секрет Grafana, алерты, дашборд)
+│   ├── 05-logging.sh               # Loki + Fluentd
+│   ├── canary.sh                   # сдвиг canary-трафика
+│   ├── clean.sh                    # безопасный teardown решения
+│   └── verify.sh                   # сквозная проверка (PASS/FAIL)
+├── gitops/                         # ArgoCD bootstrap + Application + README
+├── ansible/playbooks/              # prepare-node.yml, init-cluster.yml
+├── kubernetes/cluster/             # kubeadm-config, metrics-server, local-path-provisioner
+├── apps/nginx/                     # deployment(+v2), service(+v2), configmap(+v2), hpa, pdb, networkpolicy
+├── gateway/                        # gatewayclass, gateway, httproute, httproute-host, httproute-canary
+├── monitoring/                     # values-kps, servicemonitor, prometheusrule, dashboard
+├── logging/                        # values-loki, fluentd DaemonSet + Dockerfile
+└── docs/passport.md                # исходник паспорта решения
 ```
 
 ---
 
-## 12. Известные ограничения
+## 13. Известные ограничения
 
-- Кластер — **один узел** (control-plane + workload). Для продакшена требуется добавить worker-узлы и настроить HA control-plane.
-- MetalLB работает в режиме **Layer2** (адрес берётся из локальной подсети узла); BGP не используется.
-- Образ Fluentd (с плагином Loki) собирается на узле из `logging/fluentd/Dockerfile` и импортируется в containerd — решение рассчитано на однноузловой кластер.
-- TLS-терминация на Gateway не включена (требует сертификатов/домена) — доступен listener HTTP :80.
-- Пароль Grafana — значение по умолчанию (`admin/prom-operator`); для реальной эксплуатации сменить через values.
-- Хранилище Loki — ephemeral (persistence отключена, т.к. на bare-metal kubeadm нет default StorageClass). Для персистентности добавьте StorageClass (например, local-path-provisioner) и включите `singleBinary.persistence`.
-- Развёртывание выполняется от root (установка пакетов, kubeadm, сборка и импорт образа Fluentd через docker/ctr).
+- Кластер — **один узел** (control-plane + workload). Для продакшена требуется добавить
+  worker-узлы и настроить HA control-plane (дорожная карта — в паспорте).
+- MetalLB работает в режиме **Layer2** (адрес из локальной подсети узла); BGP не используется.
+- TLS-сертификат Gateway — **самоподписанный** (`curl -k`). Для публичного домена —
+  cert-manager + Let's Encrypt.
+- Образ Fluentd (с плагином Loki) собирается на узле из `logging/fluentd/Dockerfile`
+  (docker-ce) и импортируется в containerd — решение рассчитано на одноузловой кластер.
+  Для GitOps/multi-node образ нужно публиковать в registry.
+- Loki/Prometheus/Grafana используют StorageClass `local-path` (данные на узле); для
+  multi-node потребуется общее хранилище (NFS/CSI).
+- Развёртывание выполняется от root (установка пакетов, kubeadm, сборка образа Fluentd).

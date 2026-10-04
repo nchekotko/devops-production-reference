@@ -1,5 +1,6 @@
-# Минимальные values для чарта grafana/loki (6.x).
-# Loki в режиме single-binary, файловое хранилище (PVC), аутентификация отключена.
+# values для чарта grafana/loki (закреплён в scripts/05-logging.sh).
+# Loki в режиме single-binary, файловое хранилище на PVC (StorageClass local-path),
+# аутентификация отключена (внутренний стенд).
 deploymentMode: SingleBinary
 
 loki:
@@ -18,11 +19,14 @@ loki:
         index:
           prefix: loki_index_
           period: 24h
+  # Хранение логов 7 дней (компактор в single-binary применяет retention).
+  limits_config:
+    retention_period: 168h
 
 singleBinary:
   replicas: 1
   persistence:
-    # На bare-metal kubeadm нет default StorageClass, поэтому PVC не поднимется.
-    # Для демо используем ephemeral-хранилище (логи живут до пересоздания пода).
-    enabled: false
-    # size: 10Gi
+    # Персистентное хранилище логов (StorageClass local-path от local-path-provisioner).
+    enabled: true
+    storageClass: local-path
+    size: 10Gi

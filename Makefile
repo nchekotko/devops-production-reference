@@ -1,17 +1,23 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-.PHONY: help cluster app gateway monitoring logging deploy verify
+# Процент трафика на canary-версию для `make canary` (0..100).
+PCT ?= 5
+
+.PHONY: help cluster app gateway monitoring logging deploy verify canary gitops clean
 
 help: ## Показать доступные команды
 	@echo "Цели:"
-	@echo "  make cluster     - подготовка узла + kubeadm-кластер (Calico, MetalLB)"
-	@echo "  make app         - развернуть Nginx-приложение"
-	@echo "  make gateway     - развернуть Envoy Gateway (Gateway API)"
+	@echo "  make cluster     - подготовка узла + kubeadm-кластер (Calico, MetalLB, Metrics Server, Local Path)"
+	@echo "  make app         - развернуть Nginx-приложение (HPA/PDB/NetworkPolicy)"
+	@echo "  make gateway     - развернуть Envoy Gateway (Gateway API + TLS)"
 	@echo "  make monitoring  - развернуть Prometheus (kube-prometheus-stack)"
 	@echo "  make logging     - развернуть Loki + Fluentd"
 	@echo "  make deploy      - всё вместе (идемпотентно)"
-	@echo "  make verify      - сквозная проверка решения"
+	@echo "  make verify      - сквозная проверка решения (PASS/FAIL)"
+	@echo "  make canary PCT=N- сдвинуть canary-трафик на N% в nginx-v2 (по умолчанию 5)"
+	@echo "  make gitops      - установить ArgoCD (GitOps-режим)"
+	@echo "  make clean       - удалить решение (кластер остаётся)"
 
 cluster:
 	bash scripts/01-cluster.sh
@@ -34,3 +40,12 @@ deploy: cluster app gateway monitoring logging
 
 verify:
 	bash scripts/verify.sh
+
+canary:
+	bash scripts/canary.sh $(PCT)
+
+gitops:
+	bash gitops/bootstrap-argocd.sh
+
+clean:
+	bash scripts/clean.sh

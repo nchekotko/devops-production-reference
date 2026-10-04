@@ -12,3 +12,17 @@ spec:
       allowedRoutes:
         namespaces:
           from: All
+    # HTTPS-листенер с TLS-терминацией (самоподписанный сертификат из Secret
+    # `nginx-tls`, создаётся в scripts/03-gateway.sh; для продакшена заменить
+    # на cert-manager + Let's Encrypt).
+    - name: https
+      port: 443
+      protocol: HTTPS
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: nginx-tls
+      allowedRoutes:
+        namespaces:
+          from: All

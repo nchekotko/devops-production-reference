@@ -1,0 +1,33 @@
+# Kustomize-оверлей: единая декларативная точка входа для прикладного слоя.
+# Применение: kubectl apply -k .
+# Используется GitOps (ArgoCD, см. gitops/) и для ручного декларативного деплоя.
+# ВНИМАНИЕ: Helm-чарты (Envoy Gateway, kube-prometheus-stack, Loki) и сборка
+# образа Fluentd в этот оверлей НЕ входят — они ставятся make-скриптами
+# (или ArgoCD Helm-приложениями). Здесь — только raw Kubernetes-манифесты.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # --- приложение ---
+  - apps/nginx/deployment.yaml
+  - apps/nginx/service.yaml
+  - apps/nginx/configmap.yaml
+  - apps/nginx/deployment-v2.yaml
+  - apps/nginx/service-v2.yaml
+  - apps/nginx/configmap-v2.yaml
+  - apps/nginx/hpa.yaml
+  - apps/nginx/pdb.yaml
+  - apps/nginx/networkpolicy.yaml
+  # --- Gateway API ---
+  - gateway/gatewayclass.yaml
+  - gateway/gateway.yaml
+  - gateway/httproute.yaml
+  - gateway/httproute-host.yaml
+  - gateway/httproute-canary.yaml
+  # --- мониторинг (конфиги поверх kube-prometheus-stack) ---
+  - monitoring/nginx-servicemonitor.yaml
+  - monitoring/prometheusrule-nginx.yaml
+  - monitoring/grafana-dashboard-nginx.yaml
+  # --- логирование (Fluentd DaemonSet + datasource Grafana) ---
+  - logging/fluentd-kubernetes.yaml
+  - logging/grafana-datasource-loki.yaml

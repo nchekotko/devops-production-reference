@@ -1,0 +1,43 @@
+name: CI
+
+# Проверка конфигураций решения на каждый push/PR: shellcheck для скриптов,
+# kubeconform для Kubernetes-манифестов, hadolint для Dockerfile.
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  validate:
+    name: Lint and validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: ShellCheck (scripts)
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y shellcheck
+          shellcheck scripts/*.sh
+
+      - name: Kubeconform (validate Kubernetes manifests)
+        run: |
+          curl -sL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz -o /tmp/kubeconform.tgz
+          tar xzf /tmp/kubeconform.tgz -C /tmp
+          sudo mv /tmp/kubeconform /usr/local/bin/
+          kubeconform -summary -ignore-missing-schemas \
+            apps/nginx/*.yaml \
+            gateway/*.yaml \
+            monitoring/nginx-servicemonitor.yaml \
+            monitoring/prometheusrule-nginx.yaml \
+            monitoring/grafana-dashboard-nginx.yaml \
+            logging/fluentd-kubernetes.yaml \
+            kubernetes/cluster/metrics-server.yaml \
+            kubernetes/cluster/local-path-provisioner.yaml
+
+      - name: Hadolint (Dockerfile)
+        run: |
+          sudo curl -sL https://github.com/hadolint/hadolint/releases/download/v2.12.0/hadolint-Linux-x86_64 -o /usr/local/bin/hadolint
+          sudo chmod +x /usr/local/bin/hadolint
+          hadolint logging/fluentd/Dockerfile

@@ -1,3 +1,6 @@
+# Основной HTTPRoute: fallback-маршрут + демонстрация path-based routing
+# и traffic splitting. Обязательная проверка `curl http://<LB-IP>/` всегда
+# возвращает "Hello World!" (fallback-правило без matches совпадает со всем).
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -9,16 +12,12 @@ spec:
       kind: Gateway
       name: eg
   rules:
-    # Правило 1: все запросы с путём "/" (и глубже) направляются на backend nginx.
-    - matches:
-        - path:
-            type: PathPrefix
-            value: /
-      backendRefs:
+    # Правило 1 (fallback, без matches — совпадает с любым запросом).
+    - backendRefs:
         - name: nginx
           port: 80
-    # Правило 2 (бонус): маршрутизация по path — /v1 направляется в тот же backend.
-    # Демонстрирует расширенные возможности Gateway API (path-based routing).
+
+    # Правило 2: path-based маршрутизация /v1 -> "Hello v1!".
     - matches:
         - path:
             type: PathPrefix
@@ -26,3 +25,16 @@ spec:
       backendRefs:
         - name: nginx
           port: 80
+
+    # Правило 3: traffic splitting 80/20 между двумя backend'ами.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /split
+      backendRefs:
+        - name: nginx
+          port: 80
+          weight: 80
+        - name: nginx-v2
+          port: 80
+          weight: 20

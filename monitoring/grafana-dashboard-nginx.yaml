@@ -1,0 +1,60 @@
+# Готовый дашборд Grafana для nginx-exporter. Подхватывается sidecar'ом Grafana
+# (kube-prometheus-stack) по метке grafana_dashboard: "1" в namespace monitoring.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-nginx
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  nginx-overview.json: |-
+    {
+      "annotations": { "list": [] },
+      "editable": true,
+      "graphTooltip": 0,
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "Nginx HTTP requests / sec",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+          "targets": [
+            { "expr": "sum(rate(nginx_http_requests_total[5m]))", "legendFormat": "req/s" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Nginx active connections",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+          "targets": [
+            { "expr": "nginx_connections_active", "legendFormat": "{{instance}}" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Nginx 5xx responses / sec",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+          "targets": [
+            { "expr": "sum(rate(nginx_http_requests_total{status=~\"5..\"}[5m]))", "legendFormat": "5xx" }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Nginx latency (seconds, 95th percentile)",
+          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+          "targets": [
+            { "expr": "histogram_quantile(0.95, sum(rate(nginx_http_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "p95" }
+          ]
+        }
+      ],
+      "schemaVersion": 39,
+      "tags": ["nginx", "gateway-api"],
+      "timezone": "browser",
+      "title": "Nginx (Gateway API demo)",
+      "uid": "nginx-overview",
+      "version": 1
+    }

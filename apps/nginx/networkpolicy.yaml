@@ -1,0 +1,49 @@
+# NetworkPolicy для приложения: разрешаем только входящий HTTP-трафик от
+# Envoy Gateway и сбор метрик Prometheus'ом; остальное — запрещаем.
+# Реализовано паттерном "default-deny + allow-list" (обе политики объединяются).
+# Примечание: Envoy-прокси по умолчанию живёт в envoy-gateway-system, но в
+# режиме Gateway Namespace Mode — в namespace самого Gateway (default), поэтому
+# разрешаем оба. Пробы kubelet'а не затрагиваются NetworkPolicy (идут с узла).
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nginx-allow
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: envoy-gateway-system
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: default
+      ports:
+        - protocol: TCP
+          port: 80
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9113
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nginx-deny-all
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: nginx
+  policyTypes:
+    - Ingress
+  ingress: []

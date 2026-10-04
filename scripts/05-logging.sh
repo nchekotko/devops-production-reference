@@ -10,16 +10,20 @@ HELM_REPO="grafana"
 HELM_REPO_URL="https://grafana.github.io/helm-charts"
 LOKI_RELEASE="loki"
 LOKI_NAMESPACE="logging"
+LOKI_CHART_VERSION="6.7.1"   # закреплённая версия чарта Loki
 IMAGE="fluentd-loki:1.17"
 TARBALL="/tmp/fluentd-loki.tar"
 
-echo "=== 1. Добавление Helm-репозитория grafana ==="
-helm repo add "$HELM_REPO" "$HELM_REPO_URL"
+echo "=== 1. Добавление Helm-репозитория grafana (идемпотентно) ==="
+if ! helm repo list 2>/dev/null | awk '{print $1}' | grep -qx "$HELM_REPO"; then
+  helm repo add "$HELM_REPO" "$HELM_REPO_URL"
+fi
 helm repo update
 
 echo ""
-echo "=== 2. Установка Loki (single-binary, filesystem, PVC) ==="
+echo "=== 2. Установка Loki ${LOKI_CHART_VERSION} (single-binary, filesystem, PVC) ==="
 helm upgrade --install "$LOKI_RELEASE" grafana/loki \
+  --version "$LOKI_CHART_VERSION" \
   --namespace "$LOKI_NAMESPACE" \
   --create-namespace \
   --values logging/values-loki.yaml

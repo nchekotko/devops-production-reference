@@ -47,9 +47,13 @@ data:
       pos_file /var/lib/fluentd/containers.log.pos
       tag kubernetes.*
       read_from_head true
-      # containerd пишет логи в CRI-формате (не JSON), поэтому парсинг не задаём:
-      # строка целиком попадёт в поле message, а метки под/неймспейс/контейнер
-      # добавит фильтр kubernetes_metadata.
+      # containerd пишет логи в CRI-формате: "<time> <stream> <F|P> <message>".
+      # Разбираем его, чтобы в Loki попадало чистое сообщение (без CRI-префикса)
+      # и отдельное поле stream (stdout=access-лог, stderr=error-лог).
+      <parse>
+        @type regexp
+        expression /^\S+ (?<stream>stdout|stderr) [FP] (?<message>.*)$/
+      </parse>
     </source>
 
     # обогащение записей метаданными Kubernetes (namespace_name, pod_name, container_name, labels)

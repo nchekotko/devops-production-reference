@@ -1,0 +1,12 @@
+# PodDisruptionBudget: не допускает добровольных выселений всех реплик сразу
+# (например, при drain узла или обновлении).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nginx
+  namespace: default
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: nginx

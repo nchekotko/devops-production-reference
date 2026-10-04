@@ -1,20 +1,35 @@
-# Minimal values for kube-prometheus-stack (release `kps`, namespace `monitoring`).
-# Everything not listed here stays at the chart defaults. The chart already ships
-# Prometheus, Grafana, node-exporter, kube-state-metrics and their ServiceMonitors,
-# which covers the mandatory infrastructure metrics out of the box.
+# values для kube-prometheus-stack (release `kps`, namespace `monitoring`).
+# Версия чарта закреплена в scripts/04-monitoring.sh (--version).
+# Чарт из коробки ставит Prometheus, Grafana, Alertmanager, node-exporter,
+# kube-state-metrics и их ServiceMonitor'ы.
 
 grafana:
   enabled: true
+  # Пароль администратора берётся из Secret `grafana-admin-secret`
+  # (создаётся скриптом 04-monitoring.sh со случайным паролем; в репозитории
+  # пароль НЕ хранится). Ключи по умолчанию: admin-user / admin-password.
+  admin:
+    existingSecret: grafana-admin-secret
+    userKey: admin-user
+    passwordKey: admin-password
+  # Персистентность дашбордов/настроек Grafana.
+  persistence:
+    enabled: true
+    storageClassName: local-path
+    size: 5Gi
 
-# Optional: restrict which ServiceMonitors Prometheus picks up by label.
-# The nginx-metrics ServiceMonitor carries `release: kps`, and the chart's default
-# selector (serviceMonitorSelectorNilUsesHelmValues) already selects on that label,
-# so uncomment only if you want an explicit selector.
-# prometheus:
-#   prometheusSpec:
-#     serviceMonitorSelector:
-#       matchLabels:
-#         release: kps
-
-# Grafana default credentials are admin / prom-operator (the value is set in values).
-# Do NOT commit real secrets here.
+prometheus:
+  prometheusSpec:
+    # Персистентное хранилище метрик (StorageClass local-path, local-path-provisioner).
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 10Gi
+    # Хранение метрик 7 дней.
+    retention: 7d
+    # По умолчанию Prometheus подхватывает ServiceMonitor/PrometheusRule по метке
+    # `release: kps` (serviceMonitorSelectorNilUsesHelmValues / ruleSelectorNilUsesHelmValues).
